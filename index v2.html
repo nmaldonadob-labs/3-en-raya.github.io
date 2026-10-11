@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tres en raya online</title>
+  <style>
+:root {
+  --fondo: #f4f1ea;
+  --texto: #222;
+  --casilla: #fff;
+  --borde: #d8d2c4;
+  --x: #d1495b;
+  --o: #00798c;
+  --acento: #30638e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--fondo);
+  color: var(--texto);
+  font-family: system-ui, sans-serif;
+  display: flex;
+  justify-content: center;
+}
+
+main {
+  width: 100%;
+  max-width: 420px;
+  padding: 24px 16px;
+  text-align: center;
+}
+
+h1 { margin: 0 0 24px; }
+
+section { display: flex; flex-direction: column; gap: 12px; align-items: center; }
+section[hidden] { display: none; }
+
+button {
+  font: inherit;
+  padding: 12px 20px;
+  border: none;
+  border-radius: 8px;
+  background: var(--acento);
+  color: #fff;
+  cursor: pointer;
+  width: 100%;
+}
+button:hover { filter: brightness(1.1); }
+
+#compartir { width: 100%; }
+.fila { display: flex; gap: 8px; }
+.fila input { flex: 1; min-width: 0; padding: 10px; border: 1px solid var(--borde); border-radius: 8px; font: inherit; }
+.fila button { width: auto; }
+
+#menu > input, #nombre2 {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--borde);
+  border-radius: 8px;
+  font: inherit;
+}
+#solo-local { width: 100%; }
+#solo-local[hidden] { display: none; }
+
+#marcador {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--casilla);
+  border: 2px solid var(--borde);
+  border-radius: 12px;
+  overflow: hidden;
+}
+#marcador td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--borde); }
+#marcador tr:last-child td { border-bottom: none; }
+#marcador td:last-child { text-align: right; font-weight: 700; font-size: 1.2rem; }
+#marcador .ficha { width: 2em; font-weight: 700; }
+#marcador .ficha.X { color: var(--x); }
+#marcador .ficha.O { color: var(--o); }
+#marcador .empates td { color: #777; }
+#marcador .turno-activo td:nth-child(2) { font-weight: 700; }
+
+#tablero {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  flex-shrink: 0;
+  gap: 8px;
+  width: 100%;
+  aspect-ratio: 1;
+}
+
+.casilla {
+  background: var(--casilla);
+  border: 2px solid var(--borde);
+  border-radius: 12px;
+  font-size: clamp(48px, 18vw, 88px);
+  font-weight: 700;
+  color: var(--texto);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.casilla.X { color: var(--x); }
+.casilla.O { color: var(--o); }
+.casilla.ganadora { background: #fff3c4; }
+.casilla:disabled { cursor: default; filter: none; }
+
+#info, #estado { margin: 0; min-height: 1.4em; font-size: 1.1rem; }
+</style>
+</head>
+<body>
+  <main>
+    <h1>Tres en raya</h1>
+
+    <!-- Pantalla de inicio -->
+    <section id="menu">
+      <input id="nombre" maxlength="20" placeholder="Tu nombre" autocomplete="nickname">
+      <div id="solo-local" class="fila">
+        <input id="nombre2" maxlength="20" placeholder="Nombre del otro jugador (misma pantalla)">
+      </div>
+      <button id="btn-local">Jugar en esta pantalla</button>
+      <button id="btn-online">Crear partida online</button>
+      <button id="btn-unirme" hidden>Unirme a la partida</button>
+    </section>
+
+    <!-- Pantalla de juego -->
+    <section id="juego" hidden>
+      <p id="info">Conectando…</p>
+
+      <div id="compartir" hidden>
+        <p>Envía este enlace a tu rival:</p>
+        <div class="fila">
+          <input id="enlace" readonly>
+          <button id="btn-copiar">Copiar</button>
+        </div>
+      </div>
+
+      <table id="marcador">
+        <tbody>
+          <tr><td class="ficha X">X</td><td id="nombre-X"></td><td id="puntos-X">0</td></tr>
+          <tr><td class="ficha O">O</td><td id="nombre-O"></td><td id="puntos-O">0</td></tr>
+          <tr class="empates"><td></td><td>Empates</td><td id="puntos-empates">0</td></tr>
+        </tbody>
+      </table>
+
+      <div id="tablero"></div>
+
+      <p id="estado"></p>
+      <button id="btn-revancha" hidden>Revancha</button>
+    </section>
+  </main>
+
+  <!-- PeerJS: conexión directa entre los dos navegadores -->
+  <script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
+  <script>
+// Juego online con PeerJS (https://peerjs.com): gratis, sin cuenta y sin tarjeta.
+// Los dos navegadores se conectan directamente; el servidor público de PeerJS
+// solo los presenta. Quien crea la sala es X y valida todas las jugadas.
+
+const PREFIJO = "tres-en-raya-nm-"; // evita choques con otras apps en el servidor público de PeerJS
+
+// ---------- Lógica pura del juego (igual en local y online) ----------
+
+const LINEAS = [
+  [0, 1, 2], [3, 4, 5], [6, 7, 8], // filas
+  [0, 3, 6], [1, 4, 7], [2, 5, 8], // columnas
+  [0, 4, 8], [2, 4, 6],            // diagonales
+];
+
+function tableroVacio() {
+  return Array(9).fill("");
+}
+
+// Devuelve "X", "O", "empate" o "jugando"
+function calcularResultado(tablero) {
+  for (const [a, b, c] of LINEAS) {
+    if (tablero[a] && tablero[a] === tablero[b] && tablero[a] === tablero[c]) return tablero[a];
+  }
+  return tablero.every(Boolean) ? "empate" : "jugando";
+}
+
+function lineaGanadora(tablero) {
+  return LINEAS.find(([a, b, c]) => tablero[a] && tablero[a] === tablero[b] && tablero[a] === tablero[c]) || [];
+}
+
+// Aplica una jugada si es válida. Devuelve el nuevo estado o null.
+function jugar(estado, casilla, ficha) {
+  if (estado.resultado !== "jugando") return null;
+  if (estado.turno !== ficha) return null;
+  if (estado.tablero[casilla] !== "") return null;
+  const tablero = [...estado.tablero];
+  tablero[casilla] = ficha;
+  return {
+    tablero,
+    turno: ficha === "X" ? "O" : "X",
+    resultado: calcularResultado(tablero),
+  };
+}
+
+function puntosVacios() {
+  return { X: 0, O: 0, empates: 0 };
+}
+
+// Suma un punto al ganador (o a empates) si la partida acaba de terminar
+function sumarPunto(puntos, resultado) {
+  if (resultado === "jugando") return puntos;
+  const clave = resultado === "empate" ? "empates" : resultado;
+  return { ...puntos, [clave]: puntos[clave] + 1 };
+}
+
+function limpiarNombre(texto, porDefecto) {
+  const nombre = String(texto || "").trim().slice(0, 20);
+  return nombre || porDefecto;
+}
+
+// ---------- Interfaz ----------
+
+const $ = (id) => document.getElementById(id);
+const casillas = [];
+
+for (let i = 0; i < 9; i++) {
+  const boton = document.createElement("button");
+  boton.className = "casilla";
+  boton.addEventListener("click", () => alTocarCasilla(i));
+  $("tablero").appendChild(boton);
+  casillas.push(boton);
+}
+
+let nombres = { X: "Jugador X", O: "Jugador O" };
+let puntos = puntosVacios();
+
+function dibujarMarcador(turno) {
+  for (const f of ["X", "O"]) {
+    $("nombre-" + f).textContent = nombres[f] + (f === miFicha ? " (tú)" : "");
+    $("puntos-" + f).textContent = puntos[f];
+    $("nombre-" + f).parentElement.classList.toggle("turno-activo", turno === f);
+  }
+  $("puntos-empates").textContent = puntos.empates;
+}
+
+function dibujar(estado, miFicha, textoInfo) {
+  dibujarMarcador(estado.resultado === "jugando" ? estado.turno : null);
+  const ganadoras = lineaGanadora(estado.tablero);
+  estado.tablero.forEach((valor, i) => {
+    casillas[i].textContent = valor;
+    casillas[i].className = "casilla " + valor + (ganadoras.includes(i) ? " ganadora" : "");
+    casillas[i].disabled = valor !== "" || estado.resultado !== "jugando" || (miFicha && estado.turno !== miFicha);
+  });
+
+  $("info").textContent = textoInfo;
+
+  let texto;
+  if (estado.resultado === "empate") texto = "¡Empate!";
+  else if (estado.resultado !== "jugando") texto = miFicha ? (estado.resultado === miFicha ? "¡Ganaste! 🎉" : `Ganó ${nombres[estado.resultado]} 😅`) : `¡Gana ${nombres[estado.resultado]}!`;
+  else texto = miFicha ? (estado.turno === miFicha ? "Tu turno" : `Turno de ${nombres[estado.turno]}…`) : `Turno de ${nombres[estado.turno]} (${estado.turno})`;
+  $("estado").textContent = texto;
+
+  $("btn-revancha").hidden = estado.resultado === "jugando";
+}
+
+// ---------- Modo local (dos jugadores en la misma pantalla) ----------
+
+let modo = null;
+let estadoLocal = null;
+let iniciaLocal = "X";
+
+function empezarLocal() {
+  modo = "local";
+  nombres = { X: limpiarNombre($("nombre").value, "Jugador X"), O: limpiarNombre($("nombre2").value, "Jugador O") };
+  guardarNombre();
+  estadoLocal = { tablero: tableroVacio(), turno: "X", resultado: "jugando" };
+  mostrarJuego();
+  dibujar(estadoLocal, null, "Partida en esta pantalla");
+}
+
+// ---------- Modo online (PeerJS) ----------
+
+let peer = null;
+let conexion = null;
+let soyAnfitrion = false;
+let miFicha = null;
+let estadoOnline = null;
+let iniciaOnline = "X";
+
+function codigoAleatorio() {
+  const letras = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  return Array.from({ length: 5 }, () => letras[Math.floor(Math.random() * letras.length)]).join("");
+}
+
+function empezarOnline() {
+  modo = "online";
+  guardarNombre();
+  mostrarJuego();
+  const codigo = location.hash.startsWith("#r=") ? location.hash.slice(3).toUpperCase() : null;
+  if (codigo) unirseASala(codigo);
+  else crearSala();
+}
+
+// El anfitrión (X) crea la sala y espera al rival
+function crearSala() {
+  soyAnfitrion = true;
+  miFicha = "X";
+  nombres = { X: limpiarNombre($("nombre").value, "Jugador X"), O: "Jugador O" };
+  const codigo = codigoAleatorio();
+  $("info").textContent = "Creando sala…";
+  peer = new Peer(PREFIJO + codigo);
+
+  peer.on("open", () => {
+    history.replaceState(null, "", "#r=" + codigo);
+    $("enlace").value = location.origin + location.pathname + "#r=" + codigo;
+    $("compartir").hidden = false;
+    estadoOnline = { tablero: tableroVacio(), turno: "X", resultado: "jugando" };
+    dibujarOnline();
+  });
+
+  peer.on("connection", (nueva) => {
+    if (conexion && conexion.open) {
+      nueva.on("open", () => { nueva.send({ tipo: "llena" }); setTimeout(() => nueva.close(), 500); });
+      return;
+    }
+    conexion = nueva;
+    conexion.on("open", () => {
+      ultimoLatido = Date.now();
+      $("compartir").hidden = true;
+      enviarEstado();
+      dibujarOnline();
+    });
+    conexion.on("data", (msg) => {
+      if (conexion !== nueva) return;
+      ultimoLatido = Date.now();
+      if (msg.tipo === "jugada") {
+        aplicarJugadaOnline(msg.casilla, "O");
+      } else if (msg.tipo === "nombre") {
+        nombres.O = limpiarNombre(msg.nombre, "Jugador O");
+        enviarEstado();
+        dibujarOnline();
+      } else if (msg.tipo === "revancha") {
+        reiniciarOnline();
+      }
+    });
+    conexion.on("close", () => { if (conexion === nueva) rivalSeFue(); });
+  });
+
+  peer.on("error", (e) => {
+    if (e.type === "unavailable-id") { peer.destroy(); crearSala(); } // código ya usado: probar otro
+    else $("info").textContent = "Error de conexión: " + e.type;
+  });
+}
+
+// El invitado (O) se conecta a la sala del enlace
+function unirseASala(codigo) {
+  soyAnfitrion = false;
+  miFicha = "O";
+  const miNombre = limpiarNombre($("nombre").value, "Jugador O");
+  $("info").textContent = "Conectando con la sala " + codigo + "…";
+  peer = new Peer();
+
+  peer.on("open", () => {
+    conexion = peer.connect(PREFIJO + codigo, { reliable: true });
+    conexion.on("open", () => {
+      ultimoLatido = Date.now();
+      conexion.send({ tipo: "nombre", nombre: miNombre });
+    });
+    conexion.on("data", (msg) => {
+      ultimoLatido = Date.now();
+      if (msg.tipo === "estado") {
+        estadoOnline = msg.estado;
+        nombres = msg.nombres;
+        puntos = msg.puntos;
+        dibujarOnline();
+      }
+      else if (msg.tipo === "llena") {
+        conexion = null; // no somos parte de esta partida
+        $("info").textContent = "Esta sala ya tiene dos jugadores.";
+      }
+    });
+    conexion.on("close", rivalSeFue);
+  });
+
+  peer.on("error", (e) => {
+    $("info").textContent = e.type === "peer-unavailable"
+      ? "La sala no existe o tu rival cerró la página."
+      : "Error de conexión: " + e.type;
+  });
+}
+
+// Latido: cada lado avisa que sigue ahí. Si el rival calla 6 s, se fue
+// (cerrar la pestaña no siempre avisa a tiempo por sí solo).
+let ultimoLatido = 0;
+setInterval(() => {
+  if (!conexion || !conexion.open) return;
+  conexion.send({ tipo: "latido" });
+  if (Date.now() - ultimoLatido > 6000) { conexion.close(); rivalSeFue(); }
+}, 2000);
+
+function enviarEstado() {
+  if (conexion && conexion.open) conexion.send({ tipo: "estado", estado: estadoOnline, nombres, puntos });
+}
+
+// Solo el anfitrión llama a esto: valida, suma puntos y avisa al rival
+function aplicarJugadaOnline(casilla, ficha) {
+  const nuevo = jugar(estadoOnline, casilla, ficha);
+  if (!nuevo) return;
+  estadoOnline = nuevo;
+  puntos = sumarPunto(puntos, nuevo.resultado);
+  enviarEstado();
+  dibujarOnline();
+}
+
+function reiniciarOnline() {
+  if (estadoOnline.resultado === "jugando") return;
+  iniciaOnline = iniciaOnline === "X" ? "O" : "X";
+  estadoOnline = { tablero: tableroVacio(), turno: iniciaOnline, resultado: "jugando" };
+  enviarEstado();
+  dibujarOnline();
+}
+
+function rivalSeFue() {
+  if (!conexion) return;
+  conexion = null;
+  $("info").textContent = "Tu rival se desconectó.";
+  casillas.forEach((c) => (c.disabled = true));
+  $("btn-revancha").hidden = true;
+  if (soyAnfitrion) {
+    $("compartir").hidden = false; // puede entrar otro rival con el mismo enlace
+    estadoOnline = { tablero: tableroVacio(), turno: "X", resultado: "jugando" };
+    iniciaOnline = "X";
+    nombres.O = "Jugador O"; // el próximo rival empieza el marcador de cero
+    puntos = puntosVacios();
+    dibujarMarcador(null);
+  }
+}
+
+function dibujarOnline() {
+  const hayRival = conexion && conexion.open;
+  if (!estadoOnline || !hayRival) {
+    if (estadoOnline) dibujar(estadoOnline, miFicha, `Eres ${miFicha}. Esperando rival…`);
+    casillas.forEach((c) => (c.disabled = true));
+    $("estado").textContent = "";
+    $("btn-revancha").hidden = true;
+    return;
+  }
+  dibujar(estadoOnline, miFicha, `Eres ${miFicha}`);
+}
+
+// ---------- Eventos ----------
+
+function alTocarCasilla(i) {
+  if (modo === "local") {
+    const nuevo = jugar(estadoLocal, i, estadoLocal.turno);
+    if (!nuevo) return;
+    estadoLocal = nuevo;
+    puntos = sumarPunto(puntos, nuevo.resultado);
+    dibujar(estadoLocal, null, "Partida en esta pantalla");
+  } else if (modo === "online") {
+    if (soyAnfitrion) {
+      aplicarJugadaOnline(i, "X");
+    } else if (conexion && conexion.open) {
+      conexion.send({ tipo: "jugada", casilla: i });
+    }
+  }
+}
+
+$("btn-revancha").addEventListener("click", () => {
+  if (modo === "local") {
+    iniciaLocal = iniciaLocal === "X" ? "O" : "X"; // se alterna quién empieza
+    estadoLocal = { tablero: tableroVacio(), turno: iniciaLocal, resultado: "jugando" };
+    dibujar(estadoLocal, null, "Partida en esta pantalla");
+  } else if (soyAnfitrion) {
+    reiniciarOnline();
+  } else if (conexion && conexion.open) {
+    conexion.send({ tipo: "revancha" });
+  }
+});
+
+$("btn-copiar").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("enlace").value);
+    $("btn-copiar").textContent = "¡Copiado!";
+  } catch {
+    $("enlace").select();
+  }
+});
+
+$("btn-local").addEventListener("click", empezarLocal);
+$("btn-online").addEventListener("click", empezarOnline);
+$("btn-unirme").addEventListener("click", empezarOnline);
+
+// El nombre se recuerda en este navegador para la próxima vez
+function guardarNombre() {
+  try { localStorage.setItem("tres-en-raya-nombre", $("nombre").value.trim()); } catch {}
+}
+try { $("nombre").value = localStorage.getItem("tres-en-raya-nombre") || ""; } catch {}
+
+function mostrarJuego() {
+  $("menu").hidden = true;
+  $("juego").hidden = false;
+}
+
+// Si se abrió un enlace de invitación (#r=CODIGO), pedir el nombre y ofrecer unirse
+if (location.hash.startsWith("#r=")) {
+  $("solo-local").hidden = true;
+  $("btn-local").hidden = true;
+  $("btn-online").hidden = true;
+  $("btn-unirme").hidden = false;
+}
+</script>
+</body>
+</html>
